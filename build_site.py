@@ -72,7 +72,7 @@ def load_snapshot():
     meta = json.loads((BUILD / "meta.json").read_text())
     data = {s: {} for s in STATION_ORDER}
     for (st_, qty, kind), g in latest.groupby(["station", "qty", "kind"]):
-        tag = "obs" if kind == "measured" else "fc"
+        tag = {"measured": "obs", "forecast": "fc"}.get(kind, kind)  # or "alt:<label>"
         data.setdefault(st_, {})[(qty, tag)] = g.set_index("time")["value"].sort_index()
     return data, meta, latest
 
@@ -159,25 +159,40 @@ def state_table_html(state):
     return f"<div class='table-wrap'><table><thead>{head}</thead><tbody>{''.join(body)}</tbody></table></div>"
 
 
+ALT_COLORS = ["#7f8c8d", "#8e44ad", "#16a085", "#d35400", "#2c3e50", "#b7950b"]
+
+
 def hydrograph(data, station, now):
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1,
-                        subplot_titles=(f"Water level ({unit_of(station, 'H')})", "Discharge (m³/s)"))
-    shown, any_data = set(), False
-    for i, qty in enumerate(("H", "Q"), start=1):
-        for tag, name, color, dash in (("obs", "measured", C_OBS, None),
-                                       ("fc", "forecast", C_FC, "dash")):
-            s = series(data, station, qty, tag)
+    d = data.get(station, {})
+    qtys = [q for q in ("H", "Q") if any(k[0] == q and s is not None and not s.empty
+                                         for k, s in d.items())]
+    if not qtys:
+        return None
+    titles = {"H": f"Water level ({unit_of(station, 'H')})", "Q": "Discharge (m³/s)"}
+    fig = make_subplots(rows=len(qtys), cols=1, shared_xaxes=True, vertical_spacing=0.12,
+                        subplot_titles=[titles[q] for q in qtys])
+    shown = set()
+    for i, qty in enumerate(qtys, start=1):
+        alts = sorted(k[1] for k in d if k[0] == qty and k[1].startswith("alt:"))
+        traces = [("obs", "measured", C_OBS, None, 2), ("fc", "forecast", C_FC, "dash", 2)]
+        traces += [(a, "alt. " + (a[4:].split(" ", 1)[1] if " " in a[4:] else a[4:]),
+                    ALT_COLORS[j % len(ALT_COLORS)], "dot", 1.3)
+                   for j, a in enumerate(alts)]
+        for tag, name, color, dash, width in traces:
+            s = d.get((qty, tag))
             if s is None or s.empty:
                 continue
-            any_data = True
             fig.add_trace(go.Scatter(x=s.index, y=s.values, name=name, mode="lines",
-                                     line=dict(color=color, width=2, dash=dash),
+                                     line=dict(color=color, width=width, dash=dash),
                                      legendgroup=tag, showlegend=tag not in shown,
                                      hovertemplate="%{y:,.2f}"), row=i, col=1)
             shown.add(tag)
     fig.add_vline(x=now, line=dict(color="#888", width=1, dash="dot"))
-    base_layout(fig, 480)
-    return fig if any_data else None
+    fig.update_xaxes(showticklabels=True, tickformat="%d %b")   # dates under every panel
+    base_layout(fig, 290 + 230 * (len(qtys) - 1))
+    fig.update_layout(legend=dict(orientation="h", y=-0.12, yanchor="top", x=0, xanchor="left"),
+                      margin=dict(b=40))
+    return fig
 
 
 # ---------------------------------------------------------------- verification
@@ -297,6 +312,10 @@ def prepare_downloads(latest, pairs):
         p.to_csv(dl / "forecast_vs_observed.csv", index=False)
         links.append(("forecast_vs_observed.csv",
                       "Every archived forecast value matched to the observation at that time, with error and lead time"))
+    cat = rd.DATA_DIR / "catalogue_matches.csv"
+    if cat.exists():
+        shutil.copy(cat, dl / cat.name)
+        links.append((cat.name, "All Rijkswaterstaat catalogue series found for these stations"))
     for sub, desc in (("observations", "Observed, hourly"), ("forecasts", "Forecast runs")):
         files = sorted((rd.DATA_DIR / sub).glob("*.csv"))
         if files:

@@ -137,7 +137,14 @@ def write_snapshot(data, log, now):
 
 def main():
     now = _now()
-    data, log = rd.load_all(DAYS_BACK, DAYS_AHEAD, now=now)
+    try:
+        locs = rd.catalogue()
+        rd.DATA_DIR.mkdir(exist_ok=True)
+        rd.catalogue_matches(locs).to_csv(rd.DATA_DIR / "catalogue_matches.csv", index=False)
+    except Exception as e:
+        print("  ! catalogue:", e)
+        locs = None
+    data, log = rd.load_all(DAYS_BACK, DAYS_AHEAD, locs=locs, now=now)
     n_obs = archive_observations(data, now)
     n_fc = archive_forecasts(data, now)
     write_snapshot(data, log, now)
